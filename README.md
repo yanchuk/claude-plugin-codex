@@ -60,9 +60,14 @@ The stable command form is `$claude`. If your Codex UI exposes the skill as
   active, stale, or finished.
 - `$claude status`, `$claude result`, and `$claude cancel` manage Claude jobs.
 
+Pass `--model fable`, `--model opus`, `--model sonnet`, or a full model name to
+select a model explicitly. The companion forwards the value to Claude Code
+unchanged. Omit `--model` to use your configured default.
+
 Longer jobs can run in the background:
 
 ```text
+$claude advise --background --model fable challenge this architecture decision
 $claude advise --background should this VAD tuning loop collect N=5 now?
 $claude do --background --model sonnet map the auth module and return file:line citations
 $claude rescue --background --model opus investigate the flaky integration test
@@ -107,6 +112,9 @@ syntax errors.
 - Claude Code installed and authenticated on the same machine.
 - Node.js 18.18 or newer.
 
+Using `--model fable` also requires a Claude Code build and account that expose
+the `fable` alias. Run `$claude setup` after upgrading Claude Code.
+
 ## Local Development
 
 From a local checkout:
@@ -129,7 +137,9 @@ Use `$claude` in a Codex thread:
 
 ```text
 $claude setup
+$claude advise --background --model fable challenge this architecture decision
 $claude advise --background should this plan use a background worker?
+$claude do --background --model fable inspect the proposed design and cite risks
 $claude do --background --model sonnet map this package and cite file:line call sites
 $claude do --background --model opus debug this cross-module failure with a prepared task
 $claude rescue --background --model opus investigate the flaky integration test
@@ -178,6 +188,10 @@ for the same prompt. Use `--background` up front for real advisor work; use
 Review and adversarial review are read-only. `advise` and `rescue` are also
 read-only unless you pass `--write`. Write-capable Claude work is recorded as a
 separate job type.
+
+Fable is an explicit opt-in, not a new default. Use `--model fable` only when
+the user asks for it. The same read-only, prepared-task, MCP, web, and
+explicit-write boundaries continue to apply.
 
 `$claude do --model sonnet` is for prepared junior-agent work. Before using it,
 Codex should apply `tasks-for-sonnet` and turn the request into a bounded task:
@@ -296,6 +310,9 @@ through the installed skill. Sonnet is used only for this small routing test.
 
 - The plugin depends on the installed Claude Code CLI contract. Run
   `$claude setup` after upgrading Claude Code.
+- Model aliases and full model names are resolved by the installed Claude Code
+  CLI. Fable availability therefore depends on the installed version and
+  account; the companion does not translate or locally allowlist model names.
 - Background mode is optional. If the companion cannot verify `claude --bg`,
   `claude agents`, `claude logs`, `claude attach`, and `claude stop`, it
   degrades to foreground-only behavior.

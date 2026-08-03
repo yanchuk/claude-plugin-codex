@@ -136,7 +136,7 @@ function isMeaningfulLogLine(line) {
   if (/^warning: the 'NO_COLOR' env is ignored/i.test(text) || /^at\s+/.test(text) || /\binternal:/.test(text)) {
     return false;
   }
-  if (/opus|sonnet|haiku|claude max/i.test(text)) {
+  if (/fable|opus|sonnet|haiku|claude max/i.test(text)) {
     return false;
   }
   if (/thinking with .* effort/i.test(text)) {
@@ -798,16 +798,18 @@ function printUsage() {
     [
       "Usage:",
       "  claude-companion setup [--json]",
-      "  claude-companion advise [--background] [--write] [--max-turns <n>] [--effort <level>] [--allow-mcp] [--allow-web] [--no-background-fallback] [prompt]",
+      "  claude-companion advise [--background] [--write] [--model <model>] [--max-turns <n>] [--effort <level>] [--allow-mcp] [--allow-web] [--no-background-fallback] [prompt]",
       "  claude-companion do [--background] [--write] [--model <model>] [--max-turns <n>] [--effort <level>] [--allow-mcp] [--allow-web] [prompt]",
       "  claude-companion rescue [--background] [--write] [--resume] [--model <model>] [--max-turns <n>] [--effort <level>] [--allow-mcp] [--allow-web] [--no-background-fallback] [prompt]",
-      "  claude-companion review [--base <ref>] [--max-turns <n>] [--effort <level>] [--json]",
-      "  claude-companion adversarial-review [--base <ref>] [--max-turns <n>] [--effort <level>] [focus] [--json]",
+      "  claude-companion review [--base <ref>] [--model <model>] [--max-turns <n>] [--effort <level>] [--json]",
+      "  claude-companion adversarial-review [--base <ref>] [--model <model>] [--max-turns <n>] [--effort <level>] [focus] [--json]",
       "  claude-companion monitor [job-id] [--interval-ms <ms>] [--max-checks <n>] [--stale-after-ms <ms>] [--json]",
       "  claude-companion status [job-id] [--watch] [--json]",
       "  claude-companion result [job-id] [--json]",
       "  claude-companion cancel [job-id] [--json]",
-      "  claude-companion resume-candidate [--json]"
+      "  claude-companion resume-candidate [--json]",
+      "",
+      "Models are passed through to Claude Code. Examples: fable, opus, sonnet, or a full model name."
     ].join("\n") + "\n"
   );
 }
