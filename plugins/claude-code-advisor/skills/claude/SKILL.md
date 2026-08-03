@@ -3,10 +3,10 @@ name: claude
 description: >
   Use when the user asks Codex to consult Claude Code, run a Claude advisor
   pass, get a Claude adversarial review, check a plan or diff with Claude,
-  ask Claude to do a prepared coding, exploration, verifier, scout, or rescue
-  task, inspect Claude advisor job status, fetch a Claude result, or cancel a
-  Claude advisor job. This skill routes through the bundled claude-companion.mjs
-  runtime; it does not call the Claude CLI directly.
+  ask Claude Fable, Opus, or Sonnet to do a prepared coding, exploration,
+  verifier, scout, or rescue task, inspect Claude advisor job status, fetch a
+  Claude result, or cancel a Claude advisor job. This skill routes through the
+  bundled claude-companion.mjs runtime; it does not call the Claude CLI directly.
 ---
 
 # Claude Code Advisor
@@ -21,17 +21,22 @@ Canonical forms:
 
 ```text
 $claude setup
-$claude advise [--max-turns <n>] <question>
-$claude do [--background] [--write] [--model sonnet|opus] [--max-turns <n>] <prepared task>
-$claude rescue [--background] [--write] [--resume] [--model sonnet|opus] [--max-turns <n>] <task>
-$claude review [--base <ref>]
-$claude adversarial-review [--base <ref>] [focus]
+$claude advise [--background] [--model <model>] [--max-turns <n>] <question>
+$claude do [--background] [--write] [--model <model>] [--max-turns <n>] <prepared task>
+$claude rescue [--background] [--write] [--resume] [--model <model>] [--max-turns <n>] <task>
+$claude review [--base <ref>] [--model <model>]
+$claude adversarial-review [--base <ref>] [--model <model>] [focus]
 $claude monitor [job-id]
 $claude status [job-id]
 $claude result [job-id]
 $claude cancel [job-id]
 $claude resume-candidate
 ```
+
+The companion passes explicit model values through to Claude Code unchanged.
+Common aliases include `fable`, `opus`, and `sonnet`; full model names accepted
+by the installed Claude Code CLI also work. Omit `--model` to use the user's
+configured default.
 
 If Codex passes slash-style text through to this skill, normalize it before
 routing:
@@ -75,9 +80,12 @@ commands. The guaranteed Codex surface is the `$claude` skill mention.
   default: `Read,Glob,Grep`. `advise` may use web tools. For `do` and `rescue`,
   enable `WebFetch` or `WebSearch` only when the task needs web access and
   `--allow-web` is explicit.
-- Do not pass `--model sonnet` for advice, review, adversarial-review, rescue,
-  or monitor work unless the user explicitly asks for Sonnet. Let Claude Code
-  use the user's configured default model.
+- Do not pass an explicit `--model` for advice, review,
+  adversarial-review, rescue, or delegation work unless the user explicitly
+  asks for that model. Let Claude Code use the user's configured default model.
+- Pass explicit model values through unchanged. Do not translate `fable` or
+  maintain a local model allowlist; the installed Claude Code CLI is the source
+  of truth for supported aliases and full model names.
 - Pass `--effort xhigh` for advice, review, adversarial-review, rescue, and
   background jobs unless the user explicitly asks for another effort.
 - Sonnet is reserved for explicit junior-agent delegation governed by the
@@ -101,7 +109,8 @@ commands. The guaranteed Codex surface is the `$claude` skill mention.
 - `setup`: run the companion setup command and show the result.
 - `advise`: use for architecture questions, second opinions, and checker work.
   Use `--background` for substantive prompts, large context, or anything likely
-  to need more than one short answer.
+  to need more than one short answer. Honor an explicit model request such as
+  `--model fable`; otherwise omit `--model`.
 - `do`: use only for a specific prepared task. This is the preferred route when
   the user asks Claude to do coding, exploration, scout, verifier, reviewer, or
   synthesis work. For Sonnet, first apply `tasks-for-sonnet`; then route the
@@ -125,6 +134,7 @@ For long-running work, prefer:
 
 ```bash
 node "<plugin root>/scripts/claude-companion.mjs" advise --background "<question>"
+node "<plugin root>/scripts/claude-companion.mjs" advise --background --model fable "<question>"
 node "<plugin root>/scripts/claude-companion.mjs" do --background --model sonnet "<prepared task>"
 node "<plugin root>/scripts/claude-companion.mjs" do --background --model opus "<prepared task>"
 node "<plugin root>/scripts/claude-companion.mjs" rescue --background --model opus "<task>"
@@ -202,6 +212,23 @@ work around them when copying commands:
 --mcp-config '{"mcpServers":{}}' --strict-mcp-config --no-chrome
 ```
 
+## Explicit Fable Tasks
+
+Use `--model fable` only when the user explicitly asks for Fable. The companion
+forwards the alias unchanged and Claude Code resolves it according to the
+installed CLI and account. Keep the same read-only, task-preparation, MCP, web,
+and explicit-write boundaries used by the selected route.
+
+```text
+$claude advise --background --model fable <question>
+$claude do --background --model fable <prepared task>
+```
+
+```bash
+node "<plugin root>/scripts/claude-companion.mjs" advise --background --model fable --effort xhigh "<question>"
+node "<plugin root>/scripts/claude-companion.mjs" do --background --model fable --effort xhigh "<prepared task>"
+```
+
 ## Prepared Opus Tasks
 
 Use `$claude do --model opus` when the user asks Claude to do a complex task
@@ -243,6 +270,7 @@ Examples:
 node "<plugin root>/scripts/claude-companion.mjs" setup --json
 node "<plugin root>/scripts/claude-companion.mjs" adversarial-review --base main --json
 node "<plugin root>/scripts/claude-companion.mjs" advise --background --effort xhigh "<question>"
+node "<plugin root>/scripts/claude-companion.mjs" advise --background --model fable --effort xhigh "<question>"
 node "<plugin root>/scripts/claude-companion.mjs" do --background --model sonnet --effort xhigh "<prepared task>"
 node "<plugin root>/scripts/claude-companion.mjs" do --background --model opus --effort xhigh "<prepared task>"
 node "<plugin root>/scripts/claude-companion.mjs" monitor <job-id> --interval-ms 30000 --stale-after-ms 120000

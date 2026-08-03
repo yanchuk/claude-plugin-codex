@@ -30,6 +30,10 @@ Codex remains the orchestrator.
   work to Sonnet.
 - Let Claude Code use the user's configured default model unless the user
   explicitly asks for another model.
+- Use Fable only when the user explicitly asks for it; do not make it the
+  advisor, review, rescue, or delegation default.
+- Keep explicit model values as pass-through CLI arguments. Do not add a local
+  allowlist that would reject full model names or future Claude Code aliases.
 - Pass xhigh effort for Claude advisor, review, adversarial-review, rescue, and
   background work unless the user explicitly asks for another effort.
 - Use Sonnet only for junior-agent delegation governed by the

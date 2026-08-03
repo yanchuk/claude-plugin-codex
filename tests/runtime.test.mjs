@@ -79,6 +79,28 @@ test("buildClaudeArgs passes explicit effort", () => {
   assert.deepEqual(args.slice(args.indexOf("--effort"), args.indexOf("--effort") + 2), ["--effort", "xhigh"]);
 });
 
+test("argument builders pass Fable through for foreground and background work", () => {
+  const foreground = buildClaudeArgs({
+    mode: "advise",
+    prompt: "check this",
+    model: "fable"
+  });
+  const background = buildBackgroundArgs({
+    prompt: "check this",
+    name: "codex-advice",
+    model: "fable"
+  });
+
+  assert.deepEqual(foreground.slice(foreground.indexOf("--model"), foreground.indexOf("--model") + 2), [
+    "--model",
+    "fable"
+  ]);
+  assert.deepEqual(background.slice(background.indexOf("--model"), background.indexOf("--model") + 2), [
+    "--model",
+    "fable"
+  ]);
+});
+
 test("buildClaudeArgs keeps local read-only tasks off web tools by default", () => {
   const args = buildClaudeArgs({
     mode: "do",

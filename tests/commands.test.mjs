@@ -265,6 +265,7 @@ if (args[0] === "logs") {
   console.log("at refresh (internal:util/colors:18:31)");
   console.log("at loadAssertionError (node:assert:28:96)");
   console.log("▝▜█████▛▘Opus 4.7 with xhigh effort");
+  console.log("▝▜█████▛▘Fable 5 with xhigh effort");
   console.log("▘▘ ▝▝  ~/Documents/GitHub/claude-plugin-codex");
   console.log("❯ Return exactly PASS.");
   console.log("✳Hyperspacing…");
