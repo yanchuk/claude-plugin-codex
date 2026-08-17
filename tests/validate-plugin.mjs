@@ -13,6 +13,8 @@ assert.equal(manifest.version, packageJson.version);
 assert.equal(manifest.skills, "./skills/");
 assert.equal(manifest.interface?.displayName, "Claude");
 assert.deepEqual(manifest.interface?.capabilities, ["Read", "Write"]);
+assert.ok(manifest.interface?.defaultPrompt?.length <= 3);
+assert.ok(manifest.interface.defaultPrompt.every((prompt) => prompt.length <= 128));
 assert.equal(manifest.interface?.privacyPolicyURL, "https://github.com/yanchuk/claude-plugin-codex#privacy");
 assert.equal(manifest.interface?.termsOfServiceURL, "https://github.com/yanchuk/claude-plugin-codex#terms");
 assert.ok(fs.existsSync("plugins/claude-code-advisor/assets/icon.svg"));
@@ -53,5 +55,6 @@ assert.match(readme, /tasks-for-sonnet/);
 assert.match(readme, /\$claude do --model opus/);
 assert.match(readme, /\$claude advise --model sonnet/);
 assert.match(e2e, /--model sonnet/);
+assert.match(e2e, /"--sandbox", "workspace-write"/);
 
 console.log("plugin metadata ok");

@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
-const repoRoot = new URL("..", import.meta.url).pathname;
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+assert.ok(fs.existsSync(path.join(repoRoot, "package.json")), "E2E repository root is invalid.");
 const skillMarker = "claude-code-advisor:claude";
 const advisePrompt = [
   "Use $claude advise --model sonnet --max-turns 1 --timeout-ms 120000 to ask Claude Code to reply with exactly PASS.",
@@ -13,6 +17,7 @@ function run(command, args, options = {}) {
   const result = spawnSync(command, args, {
     cwd: repoRoot,
     encoding: "utf8",
+    maxBuffer: 16 * 1024 * 1024,
     timeout: 180_000,
     ...options
   });
@@ -47,7 +52,16 @@ assert.match(
 );
 
 const statusBefore = run("git", ["status", "--short"]);
-const execOutput = run("codex", ["exec", "--cd", repoRoot, "--json", advisePrompt], { input: "" });
+const stateRoot = fs.mkdtempSync(path.join(repoRoot, ".claude-plugin-codex-e2e-state-"));
+let execOutput;
+try {
+  execOutput = run("codex", ["exec", "--sandbox", "workspace-write", "--cd", repoRoot, "--json", advisePrompt], {
+    input: "",
+    env: { ...process.env, CLAUDE_COMPANION_STATE_ROOT: stateRoot }
+  });
+} finally {
+  fs.rmSync(stateRoot, { recursive: true, force: true });
+}
 const events = parseJsonLines(execOutput);
 const adviseCommand = events.find((event) => {
   return event.type === "item.completed"

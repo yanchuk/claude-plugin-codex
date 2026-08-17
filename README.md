@@ -244,6 +244,26 @@ so `$claude status`, `$claude result`, and `$claude cancel` can work across
 turns. It does not intentionally collect analytics, phone home, or send data to
 the repository owner.
 
+## State Storage
+
+By default the companion stores state under:
+
+```text
+~/.codex/claude-plugin-codex
+```
+
+Set `CLAUDE_COMPANION_STATE_ROOT` to use another local directory:
+
+```bash
+CLAUDE_COMPANION_STATE_ROOT=/path/to/writable/state \
+  node plugins/claude-code-advisor/scripts/claude-companion.mjs setup --json
+```
+
+This is useful in sandboxed Codex environments where the default Codex home
+path is readable but not writable. The state root should be local, private, and
+excluded from version control because it can contain job prompts, Claude output,
+workspace paths, and review results.
+
 ## Terms
 
 This project is provided under the MIT License. You are responsible for how you
@@ -269,6 +289,9 @@ The companion owns:
 
 ## Development
 
+Use Node.js 24 for development. The repository includes `.node-version` for
+compatible version managers, and CI also checks Node.js 20 and 22 compatibility.
+
 ```bash
 npm test
 npm run validate
@@ -290,7 +313,10 @@ npm run test:e2e:codex
 This requires `codex plugin marketplace add ./`, `Claude` installed from
 Codex's plugin directory, and a logged-in Claude Code CLI. It starts a fresh
 `codex exec` session and verifies that `$claude advise --model sonnet` routes
-through the installed skill. Sonnet is used only for this small routing test.
+through the installed skill. The test uses Codex's `workspace-write` sandbox,
+supplies a private temporary companion state root inside the checkout, and
+removes that state before checking the worktree. Sonnet is used only for this
+small routing test.
 
 ## Current Limits
 
@@ -309,12 +335,17 @@ through the installed skill. Sonnet is used only for this small routing test.
 - Foreground prepared task routes use a larger default turn budget than
   structured review. If Claude reports that it hit the max-turn limit, rerun
   with `--max-turns <higher>` or narrow the task.
+- Working-tree structured reviews stop when untracked files exist because their
+  contents are absent from a Git diff and review mode cannot read the workspace.
+  Stage the intended files before rerunning the review.
 - `$claude monitor` checks a background job every 30 seconds by default. It
-  reads `claude logs` and `claude agents`, filters routine terminal noise, and
-  marks repeated output as stale after two minutes.
-- Structured review depends on Claude returning valid JSON inside the
-  `--output-format json` result envelope. The companion validates and retries
-  once before failing.
+  reads `claude logs` and `claude agents --json --all`, filters routine terminal
+  noise, and marks repeated output as stale after two minutes.
+- Structured review extracts a single complete JSON object from Claude's
+  `--output-format json` result envelope, tolerating leading status prose or
+  tool-call markup while rejecting ambiguous multiple objects. The extracted
+  review payload is still validated strictly, and the companion retries once
+  before failing.
 
 ## Troubleshooting
 
@@ -322,6 +353,13 @@ If Codex shows `Unable to load skill contents` after an update, restart Codex
 or start a new thread. Codex may still point at an older cached skill path after
 a plugin version bump. If the error remains, remove and reinstall the
 `claude-plugin-codex` marketplace.
+
+If `$claude setup` or a companion command fails with a write permission error
+under `~/.codex/claude-plugin-codex`, rerun it with `CLAUDE_COMPANION_STATE_ROOT`
+pointing at a writable directory. Within that root, the companion restricts its
+workspace and thread directories to mode `0700` and state/pointer files to mode
+`0600`. Do not point it at the project repository unless you also ignore that
+path in Git.
 
 ## License
 

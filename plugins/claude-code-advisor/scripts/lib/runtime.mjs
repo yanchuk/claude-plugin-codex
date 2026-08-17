@@ -83,13 +83,16 @@ export function loadState(stateDir) {
 }
 
 export function saveState(stateDir, state) {
-  fs.mkdirSync(stateDir, { recursive: true });
+  fs.mkdirSync(stateDir, { recursive: true, mode: 0o700 });
+  fs.chmodSync(stateDir, 0o700);
   const next = {
     ...emptyState(),
     ...state,
     jobs: [...(state.jobs || [])].sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")))
   };
-  fs.writeFileSync(path.join(stateDir, "state.json"), `${JSON.stringify(next, null, 2)}\n`, "utf8");
+  const stateFile = path.join(stateDir, "state.json");
+  fs.writeFileSync(stateFile, `${JSON.stringify(next, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+  fs.chmodSync(stateFile, 0o600);
   return next;
 }
 
@@ -267,14 +270,70 @@ export function parseClaudeJsonResult(raw) {
   }
   const envelope = JSON.parse(text);
   const sessionId = envelope.session_id || envelope.sessionId || null;
-  const contentRaw = typeof envelope.result === "string" ? envelope.result : text;
-  const content = typeof envelope.result === "string" ? JSON.parse(envelope.result) : envelope;
+  const contentRaw = typeof envelope.result === "string" ? normalizeClaudeResult(envelope.result) : text;
+  const content = typeof envelope.result === "string" ? JSON.parse(contentRaw) : envelope;
   return {
     envelope,
     content,
     contentRaw,
     sessionId
   };
+}
+
+function normalizeClaudeResult(raw) {
+  const trimmed = String(raw || "").trim();
+  const toolCalls = trimmed.match(/^<function_calls>[\s\S]*?<\/function_calls>\s*/);
+  const withoutToolCalls = toolCalls ? trimmed.slice(toolCalls[0].length).trim() : trimmed;
+  try {
+    JSON.parse(withoutToolCalls);
+    return withoutToolCalls;
+  } catch {
+    const candidates = extractJsonObjects(withoutToolCalls);
+    if (candidates.length > 1) {
+      throw new Error("Ambiguous JSON Claude result: multiple complete objects were returned.");
+    }
+    return candidates[0] || withoutToolCalls;
+  }
+}
+
+function extractJsonObjects(value) {
+  const text = String(value || "");
+  const objects = [];
+  let start = -1;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (inString && char === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (char === '"') {
+      inString = !inString;
+      continue;
+    }
+    if (inString) {
+      continue;
+    }
+    if (char === "{") {
+      if (depth === 0) {
+        start = index;
+      }
+      depth += 1;
+    } else if (char === "}" && depth > 0) {
+      depth -= 1;
+      if (depth === 0) {
+        objects.push(text.slice(start, index + 1).trim());
+        start = -1;
+      }
+    }
+  }
+  return objects;
 }
 
 export function buildReviewPrompt({ kind, targetLabel, gitContext, focus = "" }) {

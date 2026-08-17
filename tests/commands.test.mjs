@@ -3,9 +3,12 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync, spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 
-const companion = new URL("../plugins/claude-code-advisor/scripts/claude-companion.mjs", import.meta.url);
+const companion = fileURLToPath(
+  new URL("../plugins/claude-code-advisor/scripts/claude-companion.mjs", import.meta.url)
+);
 
 function makeFakeClaude(scriptBody) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fake-claude-"));
@@ -44,7 +47,8 @@ if (args.includes("-p")) { console.log("{}"); process.exit(0); }
 console.error("unsupported"); process.exit(2);
 `);
   const stateRoot = fs.mkdtempSync(path.join(os.tmpdir(), "claude-state-"));
-  const stdout = execFileSync(process.execPath, [companion.pathname, "setup", "--json"], {
+  fs.chmodSync(stateRoot, 0o755);
+  const stdout = execFileSync(process.execPath, [companion, "setup", "--json"], {
     env: { ...process.env, PATH: `${fake.dir}:${process.env.PATH}`, CLAUDE_COMPANION_STATE_ROOT: stateRoot },
     cwd: stateRoot,
     encoding: "utf8"
@@ -54,6 +58,16 @@ console.error("unsupported"); process.exit(2);
   assert.equal(payload.ready, true);
   assert.equal(payload.capabilities.print, true);
   assert.equal(payload.capabilities.background, false);
+  assert.equal(fs.statSync(stateRoot).mode & 0o777, 0o755);
+  const workspaceIndex = fs.readdirSync(stateRoot).find((entry) => entry.startsWith("claude-state-"));
+  assert.ok(workspaceIndex);
+  const indexDir = path.join(stateRoot, workspaceIndex);
+  const latestStateFile = path.join(indexDir, "latest-state-dir");
+  const stateDir = fs.readFileSync(latestStateFile, "utf8").trim();
+  assert.equal(fs.statSync(indexDir).mode & 0o777, 0o700);
+  assert.equal(fs.statSync(stateDir).mode & 0o777, 0o700);
+  assert.equal(fs.statSync(path.join(stateDir, "state.json")).mode & 0o777, 0o600);
+  assert.equal(fs.statSync(latestStateFile).mode & 0o777, 0o600);
 });
 
 test("review returns validated JSON and stores result", () => {
@@ -73,7 +87,7 @@ console.error("unsupported"); process.exit(2);
     CLAUDE_COMPANION_STATE_ROOT: stateRoot,
     CODEX_THREAD_ID: "thread-a"
   };
-  const stdout = execFileSync(process.execPath, [companion.pathname, "review", "--json"], {
+  const stdout = execFileSync(process.execPath, [companion, "review", "--json"], {
     env,
     cwd: stateRoot,
     encoding: "utf8"
@@ -83,12 +97,104 @@ console.error("unsupported"); process.exit(2);
   assert.equal(payload.status, "completed");
   assert.equal(payload.result.findings[0].severity, "MAJOR");
 
-  const result = execFileSync(process.execPath, [companion.pathname, "result", payload.jobId, "--json"], {
+  const result = execFileSync(process.execPath, [companion, "result", payload.jobId, "--json"], {
     env,
     cwd: stateRoot,
     encoding: "utf8"
   });
   assert.equal(JSON.parse(result).job.id, payload.jobId);
+});
+
+test("review base range includes the patch in the Claude prompt", () => {
+  const promptLog = path.join(os.tmpdir(), `fake-review-base-${Date.now()}.log`);
+  const fake = makeFakeClaude(`
+const fs = require("node:fs");
+const args = process.argv.slice(2);
+if (args.includes("-p")) {
+  fs.writeFileSync(${JSON.stringify(promptLog)}, args[args.indexOf("-p") + 1]);
+  console.log(JSON.stringify({findings:[]}));
+  process.exit(0);
+}
+console.error("unsupported"); process.exit(2);
+`);
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), "claude-review-base-"));
+  execFileSync("git", ["init", "-q"], { cwd: repo });
+  execFileSync("git", ["config", "user.name", "Test"], { cwd: repo });
+  execFileSync("git", ["config", "user.email", "test@example.invalid"], { cwd: repo });
+  fs.writeFileSync(path.join(repo, "sample.txt"), "before\n", "utf8");
+  execFileSync("git", ["add", "sample.txt"], { cwd: repo });
+  execFileSync("git", ["commit", "-qm", "base"], { cwd: repo });
+  const base = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repo, encoding: "utf8" }).trim();
+  fs.writeFileSync(path.join(repo, "sample.txt"), "after-base-range\n", "utf8");
+  execFileSync("git", ["add", "sample.txt"], { cwd: repo });
+  execFileSync("git", ["commit", "-qm", "change"], { cwd: repo });
+  const stateRoot = fs.mkdtempSync(path.join(os.tmpdir(), "claude-state-"));
+
+  execFileSync(process.execPath, [companion, "review", "--base", base, "--json"], {
+    env: { ...process.env, PATH: `${fake.dir}:${process.env.PATH}`, CLAUDE_COMPANION_STATE_ROOT: stateRoot },
+    cwd: repo,
+    encoding: "utf8"
+  });
+
+  assert.match(fs.readFileSync(promptLog, "utf8"), /after-base-range/);
+});
+
+test("working-tree review includes staged patch content", () => {
+  const promptLog = path.join(os.tmpdir(), `fake-review-staged-${Date.now()}.log`);
+  const fake = makeFakeClaude(`
+const fs = require("node:fs");
+const args = process.argv.slice(2);
+if (args.includes("-p")) {
+  fs.writeFileSync(${JSON.stringify(promptLog)}, args[args.indexOf("-p") + 1]);
+  console.log(JSON.stringify({findings:[]}));
+  process.exit(0);
+}
+console.error("unsupported"); process.exit(2);
+`);
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), "claude-review-staged-"));
+  execFileSync("git", ["init", "-q"], { cwd: repo });
+  execFileSync("git", ["config", "user.name", "Test"], { cwd: repo });
+  execFileSync("git", ["config", "user.email", "test@example.invalid"], { cwd: repo });
+  fs.writeFileSync(path.join(repo, "sample.txt"), "before\n", "utf8");
+  execFileSync("git", ["add", "sample.txt"], { cwd: repo });
+  execFileSync("git", ["commit", "-qm", "base"], { cwd: repo });
+  fs.writeFileSync(path.join(repo, "sample.txt"), "after-staging\n", "utf8");
+  execFileSync("git", ["add", "sample.txt"], { cwd: repo });
+  const stateRoot = fs.mkdtempSync(path.join(os.tmpdir(), "claude-state-"));
+
+  execFileSync(process.execPath, [companion, "review", "--json"], {
+    env: { ...process.env, PATH: `${fake.dir}:${process.env.PATH}`, CLAUDE_COMPANION_STATE_ROOT: stateRoot },
+    cwd: repo,
+    encoding: "utf8"
+  });
+
+  assert.match(fs.readFileSync(promptLog, "utf8"), /after-staging/);
+});
+
+test("working-tree review refuses untracked files whose contents would be omitted", () => {
+  const fake = makeFakeClaude(`
+console.error("Claude should not run when untracked files are present");
+process.exit(2);
+`);
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), "claude-review-untracked-"));
+  execFileSync("git", ["init", "-q"], { cwd: repo });
+  execFileSync("git", ["config", "user.name", "Test"], { cwd: repo });
+  execFileSync("git", ["config", "user.email", "test@example.invalid"], { cwd: repo });
+  fs.writeFileSync(path.join(repo, "tracked.txt"), "tracked\n", "utf8");
+  execFileSync("git", ["add", "tracked.txt"], { cwd: repo });
+  execFileSync("git", ["commit", "-qm", "base"], { cwd: repo });
+  fs.writeFileSync(path.join(repo, "new-source.mjs"), "export const value = 1;\n", "utf8");
+  const stateRoot = fs.mkdtempSync(path.join(os.tmpdir(), "claude-state-"));
+
+  const reviewed = spawnSync(process.execPath, [companion, "review", "--json"], {
+    env: { ...process.env, PATH: `${fake.dir}:${process.env.PATH}`, CLAUDE_COMPANION_STATE_ROOT: stateRoot },
+    cwd: repo,
+    encoding: "utf8"
+  });
+
+  assert.notEqual(reviewed.status, 0);
+  assert.match(reviewed.stderr, /Stage the intended files first/);
+  assert.match(reviewed.stderr, /new-source\.mjs/);
 });
 
 test("background advise stores Claude session id and cancel calls claude stop", () => {
@@ -105,7 +211,7 @@ console.error("unsupported"); process.exit(2);
 `);
   const stateRoot = fs.mkdtempSync(path.join(os.tmpdir(), "claude-state-"));
   const env = { ...process.env, PATH: `${fake.dir}:${process.env.PATH}`, CLAUDE_COMPANION_STATE_ROOT: stateRoot };
-  const stdout = execFileSync(process.execPath, [companion.pathname, "advise", "--background", "check architecture", "--json"], {
+  const stdout = execFileSync(process.execPath, [companion, "advise", "--background", "check architecture", "--json"], {
     env,
     cwd: stateRoot,
     encoding: "utf8"
@@ -115,7 +221,7 @@ console.error("unsupported"); process.exit(2);
   assert.equal(payload.status, "running");
   assert.equal(payload.claudeSessionId, "bg123");
 
-  const cancel = execFileSync(process.execPath, [companion.pathname, "cancel", payload.jobId, "--json"], {
+  const cancel = execFileSync(process.execPath, [companion, "cancel", payload.jobId, "--json"], {
     env,
     cwd: stateRoot,
     encoding: "utf8"
@@ -123,7 +229,7 @@ console.error("unsupported"); process.exit(2);
   assert.equal(JSON.parse(cancel).status, "cancelled");
   assert.equal(fs.readFileSync(stopLog, "utf8"), "bg123");
 
-  const result = execFileSync(process.execPath, [companion.pathname, "result", payload.jobId, "--json"], {
+  const result = execFileSync(process.execPath, [companion, "result", payload.jobId, "--json"], {
     env,
     cwd: stateRoot,
     encoding: "utf8"
@@ -132,6 +238,40 @@ console.error("unsupported"); process.exit(2);
   assert.equal(stored.job.status, "cancelled");
   assert.equal(stored.result, "latest output");
   assert.equal(stored.job.lastMeaningfulOutput, "latest output");
+});
+
+test("cancel fails without persisting cancellation when Claude stop fails", () => {
+  const fake = makeFakeClaude(`
+const args = process.argv.slice(2);
+if (args.includes("--version")) { console.log("2.1.132 (Claude Code)"); process.exit(0); }
+if (args[0] === "--bg") { console.log("backgrounded · bg-stop-fails (idle - send a prompt to start)"); process.exit(0); }
+if (args[0] === "logs") { console.log("still working"); process.exit(0); }
+if (args[0] === "agents") { console.log(JSON.stringify([{ id: "bg-stop-fails", status: "running" }])); process.exit(0); }
+if (args[0] === "stop") { console.error("stop failed"); process.exit(2); }
+console.error("unsupported"); process.exit(2);
+`);
+  const stateRoot = fs.mkdtempSync(path.join(os.tmpdir(), "claude-state-"));
+  const env = { ...process.env, PATH: `${fake.dir}:${process.env.PATH}`, CLAUDE_COMPANION_STATE_ROOT: stateRoot };
+  const launched = JSON.parse(execFileSync(
+    process.execPath,
+    [companion, "advise", "--background", "check architecture", "--json"],
+    { env, cwd: stateRoot, encoding: "utf8" }
+  ));
+
+  const cancelled = spawnSync(
+    process.execPath,
+    [companion, "cancel", launched.jobId, "--json"],
+    { env, cwd: stateRoot, encoding: "utf8" }
+  );
+
+  assert.notEqual(cancelled.status, 0);
+  assert.match(cancelled.stderr, /stop failed/);
+  const stored = JSON.parse(execFileSync(
+    process.execPath,
+    [companion, "result", launched.jobId, "--json"],
+    { env, cwd: stateRoot, encoding: "utf8" }
+  ));
+  assert.equal(stored.job.status, "running");
 });
 
 test("review defaults to a single Claude turn", () => {
@@ -149,7 +289,7 @@ if (args.includes("-p")) {
 console.error("unsupported"); process.exit(2);
 `);
   const stateRoot = fs.mkdtempSync(path.join(os.tmpdir(), "claude-state-"));
-  const stdout = execFileSync(process.execPath, [companion.pathname, "review", "--json"], {
+  const stdout = execFileSync(process.execPath, [companion, "review", "--json"], {
     env: { ...process.env, PATH: `${fake.dir}:${process.env.PATH}`, CLAUDE_COMPANION_STATE_ROOT: stateRoot },
     cwd: stateRoot,
     encoding: "utf8"
@@ -170,7 +310,7 @@ console.error("unsupported"); process.exit(2);
 `);
   const stateRoot = fs.mkdtempSync(path.join(os.tmpdir(), "claude-state-"));
   const env = { ...process.env, PATH: `${fake.dir}:${process.env.PATH}`, CLAUDE_COMPANION_STATE_ROOT: stateRoot };
-  const launched = execFileSync(process.execPath, [companion.pathname, "advise", "--background", "check architecture", "--json"], {
+  const launched = execFileSync(process.execPath, [companion, "advise", "--background", "check architecture", "--json"], {
     env,
     cwd: stateRoot,
     encoding: "utf8"
@@ -178,7 +318,7 @@ console.error("unsupported"); process.exit(2);
   const job = JSON.parse(launched);
   const watched = execFileSync(
     process.execPath,
-    [companion.pathname, "monitor", job.jobId, "--interval-ms", "1", "--max-checks", "2", "--json"],
+    [companion, "monitor", job.jobId, "--interval-ms", "1", "--max-checks", "2", "--json"],
     { env, cwd: stateRoot, encoding: "utf8" }
   );
   const snapshots = watched.trim().split(/\r?\n/).map((line) => JSON.parse(line));
@@ -187,7 +327,7 @@ console.error("unsupported"); process.exit(2);
   assert.equal(snapshots[0].active, true);
   assert.equal(snapshots[0].logs.output, "progress: still working");
 
-  const result = execFileSync(process.execPath, [companion.pathname, "result", job.jobId, "--json"], {
+  const result = execFileSync(process.execPath, [companion, "result", job.jobId, "--json"], {
     env,
     cwd: stateRoot,
     encoding: "utf8"
@@ -195,6 +335,48 @@ console.error("unsupported"); process.exit(2);
   const stored = JSON.parse(result);
   assert.equal(stored.result, "progress: still working");
   assert.equal(stored.job.lastMonitorSnapshot.summary.lastMeaningfulLine, "progress: still working");
+});
+
+test("monitor uses agents json state to mark a background job completed", () => {
+  const fake = makeFakeClaude(`
+const args = process.argv.slice(2);
+if (args.includes("--version")) { console.log("2.1.132 (Claude Code)"); process.exit(0); }
+if (args[0] === "--bg") { console.log("backgrounded · bg123 (idle - send a prompt to start)"); process.exit(0); }
+if (args[0] === "logs") { console.log("final answer available"); process.exit(0); }
+if (JSON.stringify(args) === JSON.stringify(["agents", "--json", "--all"])) {
+  console.log(JSON.stringify([{ id: "bg123", status: "idle", state: "done" }]));
+  process.exit(0);
+}
+if (args[0] === "agents") { console.error("agents must be read with --json"); process.exit(2); }
+console.error("unsupported"); process.exit(2);
+`);
+  const stateRoot = fs.mkdtempSync(path.join(os.tmpdir(), "claude-state-"));
+  const env = { ...process.env, PATH: `${fake.dir}:${process.env.PATH}`, CLAUDE_COMPANION_STATE_ROOT: stateRoot };
+  const launched = execFileSync(process.execPath, [companion, "advise", "--background", "check architecture", "--json"], {
+    env,
+    cwd: stateRoot,
+    encoding: "utf8"
+  });
+  const job = JSON.parse(launched);
+  const watched = execFileSync(process.execPath, [companion, "monitor", job.jobId, "--json"], {
+    env,
+    cwd: stateRoot,
+    encoding: "utf8"
+  });
+  const snapshot = JSON.parse(watched.trim());
+
+  assert.equal(snapshot.active, false);
+  assert.equal(snapshot.completed, true);
+  assert.equal(snapshot.agents.match.state, "done");
+
+  const result = execFileSync(process.execPath, [companion, "result", job.jobId, "--json"], {
+    env,
+    cwd: stateRoot,
+    encoding: "utf8"
+  });
+  const stored = JSON.parse(result);
+  assert.equal(stored.job.status, "completed");
+  assert.equal(stored.result, "final answer available");
 });
 
 test("monitor summarizes meaningful progress and stale repeated logs", () => {
@@ -215,7 +397,7 @@ console.error("unsupported"); process.exit(2);
 `);
   const stateRoot = fs.mkdtempSync(path.join(os.tmpdir(), "claude-state-"));
   const env = { ...process.env, PATH: `${fake.dir}:${process.env.PATH}`, CLAUDE_COMPANION_STATE_ROOT: stateRoot };
-  const launched = execFileSync(process.execPath, [companion.pathname, "advise", "--background", "check architecture", "--json"], {
+  const launched = execFileSync(process.execPath, [companion, "advise", "--background", "check architecture", "--json"], {
     env,
     cwd: stateRoot,
     encoding: "utf8"
@@ -224,7 +406,7 @@ console.error("unsupported"); process.exit(2);
   const watched = execFileSync(
     process.execPath,
     [
-      companion.pathname,
+      companion,
       "monitor",
       job.jobId,
       "--interval-ms",
@@ -248,7 +430,7 @@ console.error("unsupported"); process.exit(2);
 
   const human = execFileSync(
     process.execPath,
-    [companion.pathname, "monitor", job.jobId, "--interval-ms", "1", "--max-checks", "1"],
+    [companion, "monitor", job.jobId, "--interval-ms", "1", "--max-checks", "1"],
     { env, cwd: stateRoot, encoding: "utf8" }
   );
   assert.match(human, /Last meaningful output: progress: compiling tests/);
@@ -280,13 +462,13 @@ console.error("unsupported"); process.exit(2);
 `);
   const stateRoot = fs.mkdtempSync(path.join(os.tmpdir(), "claude-state-"));
   const env = { ...process.env, PATH: `${fake.dir}:${process.env.PATH}`, CLAUDE_COMPANION_STATE_ROOT: stateRoot };
-  const launched = execFileSync(process.execPath, [companion.pathname, "advise", "--background", "check architecture", "--json"], {
+  const launched = execFileSync(process.execPath, [companion, "advise", "--background", "check architecture", "--json"], {
     env,
     cwd: stateRoot,
     encoding: "utf8"
   });
   const job = JSON.parse(launched);
-  const watched = execFileSync(process.execPath, [companion.pathname, "monitor", job.jobId, "--json"], {
+  const watched = execFileSync(process.execPath, [companion, "monitor", job.jobId, "--json"], {
     env,
     cwd: stateRoot,
     encoding: "utf8"
@@ -298,7 +480,7 @@ console.error("unsupported"); process.exit(2);
   assert.equal(snapshot.summary.state, "inactive");
   assert.equal(snapshot.summary.lastMeaningfulLine, "PASS");
 
-  const result = execFileSync(process.execPath, [companion.pathname, "result", job.jobId, "--json"], {
+  const result = execFileSync(process.execPath, [companion, "result", job.jobId, "--json"], {
     env,
     cwd: stateRoot,
     encoding: "utf8"
@@ -311,7 +493,7 @@ console.error("unsupported"); process.exit(2);
 test("foreground advise defaults to a larger turn budget", () => {
   const fake = makeFakeClaudeExpectingMaxTurns(20);
   const stateRoot = fs.mkdtempSync(path.join(os.tmpdir(), "claude-state-"));
-  const stdout = execFileSync(process.execPath, [companion.pathname, "advise", "check architecture", "--json"], {
+  const stdout = execFileSync(process.execPath, [companion, "advise", "check architecture", "--json"], {
     env: { ...process.env, PATH: `${fake.dir}:${process.env.PATH}`, CLAUDE_COMPANION_STATE_ROOT: stateRoot },
     cwd: stateRoot,
     encoding: "utf8"
@@ -325,7 +507,7 @@ test("foreground advise defaults to a larger turn budget", () => {
 test("foreground do defaults to a larger turn budget", () => {
   const fake = makeFakeClaudeExpectingMaxTurns(20);
   const stateRoot = fs.mkdtempSync(path.join(os.tmpdir(), "claude-state-"));
-  const stdout = execFileSync(process.execPath, [companion.pathname, "do", "inspect local code", "--json"], {
+  const stdout = execFileSync(process.execPath, [companion, "do", "inspect local code", "--json"], {
     env: { ...process.env, PATH: `${fake.dir}:${process.env.PATH}`, CLAUDE_COMPANION_STATE_ROOT: stateRoot },
     cwd: stateRoot,
     encoding: "utf8"
@@ -339,7 +521,7 @@ test("foreground do defaults to a larger turn budget", () => {
 test("foreground rescue defaults to a larger turn budget", () => {
   const fake = makeFakeClaudeExpectingMaxTurns(20);
   const stateRoot = fs.mkdtempSync(path.join(os.tmpdir(), "claude-state-"));
-  const stdout = execFileSync(process.execPath, [companion.pathname, "rescue", "diagnose the failure", "--json"], {
+  const stdout = execFileSync(process.execPath, [companion, "rescue", "diagnose the failure", "--json"], {
     env: { ...process.env, PATH: `${fake.dir}:${process.env.PATH}`, CLAUDE_COMPANION_STATE_ROOT: stateRoot },
     cwd: stateRoot,
     encoding: "utf8"
@@ -355,7 +537,7 @@ test("foreground task max-turn override takes precedence over the default", () =
   const stateRoot = fs.mkdtempSync(path.join(os.tmpdir(), "claude-state-"));
   const stdout = execFileSync(
     process.execPath,
-    [companion.pathname, "do", "--max-turns", "5", "inspect local code", "--json"],
+    [companion, "do", "--max-turns", "5", "inspect local code", "--json"],
     {
       env: { ...process.env, PATH: `${fake.dir}:${process.env.PATH}`, CLAUDE_COMPANION_STATE_ROOT: stateRoot },
       cwd: stateRoot,
@@ -378,7 +560,7 @@ if (args.includes("-p")) {
 console.error("unsupported"); process.exit(2);
 `);
   const stateRoot = fs.mkdtempSync(path.join(os.tmpdir(), "claude-state-"));
-  const stdout = execFileSync(process.execPath, [companion.pathname, "do", "inspect local code", "--json"], {
+  const stdout = execFileSync(process.execPath, [companion, "do", "inspect local code", "--json"], {
     env: { ...process.env, PATH: `${fake.dir}:${process.env.PATH}`, CLAUDE_COMPANION_STATE_ROOT: stateRoot },
     cwd: stateRoot,
     encoding: "utf8"
@@ -405,7 +587,7 @@ if (args.includes("-p")) {
 console.error("unsupported"); process.exit(2);
 `);
   const stateRoot = fs.mkdtempSync(path.join(os.tmpdir(), "claude-state-"));
-  const stdout = execFileSync(process.execPath, [companion.pathname, "advise", "check architecture", "--json"], {
+  const stdout = execFileSync(process.execPath, [companion, "advise", "check architecture", "--json"], {
     env: { ...process.env, PATH: `${fake.dir}:${process.env.PATH}`, CLAUDE_COMPANION_STATE_ROOT: stateRoot },
     cwd: stateRoot,
     encoding: "utf8"
@@ -431,7 +613,7 @@ if (args[0] === "--bg") {
 console.error("unsupported"); process.exit(2);
 `);
   const stateRoot = fs.mkdtempSync(path.join(os.tmpdir(), "claude-state-"));
-  const stdout = execFileSync(process.execPath, [companion.pathname, "advise", "--background", "check architecture", "--json"], {
+  const stdout = execFileSync(process.execPath, [companion, "advise", "--background", "check architecture", "--json"], {
     env: { ...process.env, PATH: `${fake.dir}:${process.env.PATH}`, CLAUDE_COMPANION_STATE_ROOT: stateRoot },
     cwd: stateRoot,
     encoding: "utf8"
@@ -453,7 +635,7 @@ console.error("unsupported"); process.exit(2);
 `);
   const stateRoot = fs.mkdtempSync(path.join(os.tmpdir(), "claude-state-"));
   fs.writeFileSync(path.join(stateRoot, ".mcp.json"), '{"mcpServers":{"playwright":{}}}\n', "utf8");
-  const result = spawnSync(process.execPath, [companion.pathname, "advise", "--background", "check architecture", "--json"], {
+  const result = spawnSync(process.execPath, [companion, "advise", "--background", "check architecture", "--json"], {
     env: { ...process.env, PATH: `${fake.dir}:${process.env.PATH}`, CLAUDE_COMPANION_STATE_ROOT: stateRoot },
     cwd: stateRoot,
     encoding: "utf8"
@@ -478,7 +660,7 @@ console.error("unsupported"); process.exit(2);
   fs.mkdirSync(child, { recursive: true });
   fs.writeFileSync(path.join(parent, ".mcp.json"), '{"mcpServers":{"playwright":{}}}\n', "utf8");
   fs.writeFileSync(path.join(child, ".git"), "gitdir: ../.git/worktrees/task\n", "utf8");
-  const result = spawnSync(process.execPath, [companion.pathname, "advise", "--background", "check architecture", "--json"], {
+  const result = spawnSync(process.execPath, [companion, "advise", "--background", "check architecture", "--json"], {
     env: { ...process.env, PATH: `${fake.dir}:${process.env.PATH}`, CLAUDE_COMPANION_STATE_ROOT: parent },
     cwd: child,
     encoding: "utf8"
@@ -506,7 +688,7 @@ console.error("unsupported"); process.exit(2);
   fs.writeFileSync(path.join(stateRoot, ".mcp.json"), '{"mcpServers":{"playwright":{}}}\n', "utf8");
   const stdout = execFileSync(
     process.execPath,
-    [companion.pathname, "advise", "--background", "--allow-mcp", "check architecture", "--json"],
+    [companion, "advise", "--background", "--allow-mcp", "check architecture", "--json"],
     {
       env: { ...process.env, PATH: `${fake.dir}:${process.env.PATH}`, CLAUDE_COMPANION_STATE_ROOT: stateRoot },
       cwd: stateRoot,
@@ -534,7 +716,7 @@ if (args.includes("-p")) {
 console.error("unsupported"); process.exit(2);
 `);
   const stateRoot = fs.mkdtempSync(path.join(os.tmpdir(), "claude-state-"));
-  const stdout = execFileSync(process.execPath, [companion.pathname, "do", "inspect local code", "--json"], {
+  const stdout = execFileSync(process.execPath, [companion, "do", "inspect local code", "--json"], {
     env: { ...process.env, PATH: `${fake.dir}:${process.env.PATH}`, CLAUDE_COMPANION_STATE_ROOT: stateRoot },
     cwd: stateRoot,
     encoding: "utf8"
@@ -553,15 +735,16 @@ if (args[0] === "--bg") {
   process.exit(0);
 }
 if (args.includes("-p")) {
-  setTimeout(() => {}, 5000);
+  setTimeout(() => process.exit(0), 5000);
+} else {
+  console.error("unsupported"); process.exit(2);
 }
-console.error("unsupported"); process.exit(2);
 `);
   const stateRoot = fs.mkdtempSync(path.join(os.tmpdir(), "claude-state-"));
   const env = { ...process.env, PATH: `${fake.dir}:${process.env.PATH}`, CLAUDE_COMPANION_STATE_ROOT: stateRoot };
   const stdout = execFileSync(
     process.execPath,
-    [companion.pathname, "advise", "--timeout-ms", "50", "check architecture", "--json"],
+    [companion, "advise", "--timeout-ms", "50", "check architecture", "--json"],
     { env, cwd: stateRoot, encoding: "utf8" }
   );
   const payload = JSON.parse(stdout);
@@ -570,7 +753,7 @@ console.error("unsupported"); process.exit(2);
   assert.equal(payload.claudeSessionId, "bg123");
   assert.match(payload.output, /Foreground Claude timed out/);
 
-  const status = execFileSync(process.execPath, [companion.pathname, "status", payload.jobId, "--json"], {
+  const status = execFileSync(process.execPath, [companion, "status", payload.jobId, "--json"], {
     env,
     cwd: stateRoot,
     encoding: "utf8"
@@ -582,14 +765,15 @@ test("foreground advise can disable timeout background fallback", () => {
   const fake = makeFakeClaude(`
 const args = process.argv.slice(2);
 if (args.includes("-p")) {
-  setTimeout(() => {}, 5000);
+  setTimeout(() => process.exit(0), 5000);
+} else {
+  console.error("unsupported"); process.exit(2);
 }
-console.error("unsupported"); process.exit(2);
 `);
   const stateRoot = fs.mkdtempSync(path.join(os.tmpdir(), "claude-state-"));
   const result = spawnSync(
     process.execPath,
-    [companion.pathname, "advise", "--timeout-ms", "50", "--no-background-fallback", "slow"],
+    [companion, "advise", "--timeout-ms", "50", "--no-background-fallback", "slow"],
     {
       env: { ...process.env, PATH: `${fake.dir}:${process.env.PATH}`, CLAUDE_COMPANION_STATE_ROOT: stateRoot },
       cwd: stateRoot,
@@ -608,7 +792,7 @@ if (args.includes("-p")) { console.log("human answer"); process.exit(0); }
 console.error("unsupported"); process.exit(2);
 `);
   const stateRoot = fs.mkdtempSync(path.join(os.tmpdir(), "claude-state-"));
-  const stdout = execFileSync(process.execPath, [companion.pathname, "advise", "check architecture"], {
+  const stdout = execFileSync(process.execPath, [companion, "advise", "check architecture"], {
     env: { ...process.env, PATH: `${fake.dir}:${process.env.PATH}`, CLAUDE_COMPANION_STATE_ROOT: stateRoot },
     cwd: stateRoot,
     encoding: "utf8"
@@ -633,7 +817,7 @@ console.error("unsupported"); process.exit(2);
 `);
   const stateRoot = fs.mkdtempSync(path.join(os.tmpdir(), "claude-state-"));
   const env = { ...process.env, PATH: `${fake.dir}:${process.env.PATH}`, CLAUDE_COMPANION_STATE_ROOT: stateRoot };
-  const stdout = execFileSync(process.execPath, [companion.pathname, "rescue", "--write", "fix the failing test", "--json"], {
+  const stdout = execFileSync(process.execPath, [companion, "rescue", "--write", "fix the failing test", "--json"], {
     env,
     cwd: stateRoot,
     encoding: "utf8"
@@ -644,7 +828,7 @@ console.error("unsupported"); process.exit(2);
   assert.equal(payload.status, "completed");
   assert.equal(payload.output, "rescued");
 
-  const result = execFileSync(process.execPath, [companion.pathname, "result", payload.jobId, "--json"], {
+  const result = execFileSync(process.execPath, [companion, "result", payload.jobId, "--json"], {
     env,
     cwd: stateRoot,
     encoding: "utf8"
@@ -668,7 +852,7 @@ console.error("unsupported"); process.exit(2);
 `);
   const stateRoot = fs.mkdtempSync(path.join(os.tmpdir(), "claude-state-"));
   const env = { ...process.env, PATH: `${fake.dir}:${process.env.PATH}`, CLAUDE_COMPANION_STATE_ROOT: stateRoot };
-  const stdout = execFileSync(process.execPath, [companion.pathname, "rescue", "diagnose the failure", "--json"], {
+  const stdout = execFileSync(process.execPath, [companion, "rescue", "diagnose the failure", "--json"], {
     env,
     cwd: stateRoot,
     encoding: "utf8"
@@ -701,7 +885,7 @@ console.error("unsupported"); process.exit(2);
   const env = { ...process.env, PATH: `${fake.dir}:${process.env.PATH}`, CLAUDE_COMPANION_STATE_ROOT: stateRoot };
   const stdout = execFileSync(
     process.execPath,
-    [companion.pathname, "do", "--write", "--model", "sonnet", "implement the prepared task", "--json"],
+    [companion, "do", "--write", "--model", "sonnet", "implement the prepared task", "--json"],
     { env, cwd: stateRoot, encoding: "utf8" }
   );
   const payload = JSON.parse(stdout);
@@ -716,7 +900,7 @@ test("foreground timeout fails the job without hanging", () => {
 setTimeout(() => {}, 5000);
 `);
   const stateRoot = fs.mkdtempSync(path.join(os.tmpdir(), "claude-state-"));
-  const result = spawnSync(process.execPath, [companion.pathname, "advise", "--timeout-ms", "50", "--no-background-fallback", "slow"], {
+  const result = spawnSync(process.execPath, [companion, "advise", "--timeout-ms", "50", "--no-background-fallback", "slow"], {
     env: { ...process.env, PATH: `${fake.dir}:${process.env.PATH}`, CLAUDE_COMPANION_STATE_ROOT: stateRoot },
     cwd: stateRoot,
     encoding: "utf8"
