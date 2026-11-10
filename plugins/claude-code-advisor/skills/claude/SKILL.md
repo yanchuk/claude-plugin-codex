@@ -91,8 +91,11 @@ commands. The guaranteed Codex surface is the `$claude` skill mention.
   Claude-side choice for tasks you would not hand to a junior agent.
 - Foreground `advise`, `do`, and `rescue` use a larger default max-turn budget
   for prepared work. `review` and `adversarial-review` stay tight and
-  structured with one default turn. If a foreground prepared task hits the
-  max-turn limit, rerun with `--max-turns <higher>` or narrow the task.
+  structured with one default turn. Foreground prepared tasks tell Claude its
+  turn budget. If one hits the max-turn limit, the companion resumes the same
+  Claude session with tools off and asks for the final answer from the
+  evidence already gathered; the output says so. If that also fails, rerun
+  with `--max-turns <higher>` or narrow the task.
 - Do not auto-resume a Claude job when the companion says explicit selection
   is required.
 

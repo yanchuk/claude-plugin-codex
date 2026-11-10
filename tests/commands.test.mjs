@@ -309,7 +309,7 @@ console.error("unsupported"); process.exit(2);
 });
 
 test("foreground advise defaults to a larger turn budget", () => {
-  const fake = makeFakeClaudeExpectingMaxTurns(20);
+  const fake = makeFakeClaudeExpectingMaxTurns(60);
   const stateRoot = fs.mkdtempSync(path.join(os.tmpdir(), "claude-state-"));
   const stdout = execFileSync(process.execPath, [companion.pathname, "advise", "check architecture", "--json"], {
     env: { ...process.env, PATH: `${fake.dir}:${process.env.PATH}`, CLAUDE_COMPANION_STATE_ROOT: stateRoot },
@@ -323,7 +323,7 @@ test("foreground advise defaults to a larger turn budget", () => {
 });
 
 test("foreground do defaults to a larger turn budget", () => {
-  const fake = makeFakeClaudeExpectingMaxTurns(20);
+  const fake = makeFakeClaudeExpectingMaxTurns(60);
   const stateRoot = fs.mkdtempSync(path.join(os.tmpdir(), "claude-state-"));
   const stdout = execFileSync(process.execPath, [companion.pathname, "do", "inspect local code", "--json"], {
     env: { ...process.env, PATH: `${fake.dir}:${process.env.PATH}`, CLAUDE_COMPANION_STATE_ROOT: stateRoot },
@@ -337,7 +337,7 @@ test("foreground do defaults to a larger turn budget", () => {
 });
 
 test("foreground rescue defaults to a larger turn budget", () => {
-  const fake = makeFakeClaudeExpectingMaxTurns(20);
+  const fake = makeFakeClaudeExpectingMaxTurns(60);
   const stateRoot = fs.mkdtempSync(path.join(os.tmpdir(), "claude-state-"));
   const stdout = execFileSync(process.execPath, [companion.pathname, "rescue", "diagnose the failure", "--json"], {
     env: { ...process.env, PATH: `${fake.dir}:${process.env.PATH}`, CLAUDE_COMPANION_STATE_ROOT: stateRoot },
@@ -388,6 +388,65 @@ console.error("unsupported"); process.exit(2);
   assert.equal(payload.status, "failed");
   assert.match(payload.output, /Claude hit the max-turn limit/);
   assert.match(payload.output, /--max-turns <higher>/);
+});
+
+test("foreground task tells Claude its turn budget", () => {
+  const fake = makeFakeClaude(`
+const args = process.argv.slice(2);
+const prompt = args[args.indexOf("-p") + 1];
+if (!/Turn budget: you have 60 turns/.test(prompt) || !/last 3 turns for the written answer/.test(prompt)) {
+  console.error("missing turn budget: " + prompt);
+  process.exit(2);
+}
+console.log("ok");
+process.exit(0);
+`);
+  const stateRoot = fs.mkdtempSync(path.join(os.tmpdir(), "claude-state-"));
+  const stdout = execFileSync(process.execPath, [companion.pathname, "do", "inspect local code", "--json"], {
+    env: { ...process.env, PATH: `${fake.dir}:${process.env.PATH}`, CLAUDE_COMPANION_STATE_ROOT: stateRoot },
+    cwd: stateRoot,
+    encoding: "utf8"
+  });
+  assert.equal(JSON.parse(stdout).status, "completed");
+});
+
+test("foreground task max-turn failure resumes the session for a final answer", () => {
+  const fake = makeFakeClaude(`
+const fs = require("node:fs");
+const args = process.argv.slice(2);
+const log = process.env.FAKE_CLAUDE_LOG;
+fs.appendFileSync(log, JSON.stringify(args) + "\\n");
+if (args.includes("--session-id")) {
+  console.log("Error: Reached max turns (60)");
+  process.exit(1);
+}
+if (args.includes("--resume")) {
+  const tools = args[args.indexOf("--tools") + 1];
+  if (tools !== "" || args[args.indexOf("--max-turns") + 1] !== "2") {
+    console.error("salvage must run with no tools and 2 turns");
+    process.exit(2);
+  }
+  console.log("VERDICT: approve, with gaps");
+  process.exit(0);
+}
+console.error("unsupported"); process.exit(2);
+`);
+  const stateRoot = fs.mkdtempSync(path.join(os.tmpdir(), "claude-state-"));
+  const log = path.join(stateRoot, "calls.jsonl");
+  const stdout = execFileSync(process.execPath, [companion.pathname, "do", "review the change", "--json"], {
+    env: { ...process.env, PATH: `${fake.dir}:${process.env.PATH}`, CLAUDE_COMPANION_STATE_ROOT: stateRoot, FAKE_CLAUDE_LOG: log },
+    cwd: stateRoot,
+    encoding: "utf8"
+  });
+  const payload = JSON.parse(stdout);
+  const calls = fs.readFileSync(log, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+  const sessionId = calls[0][calls[0].indexOf("--session-id") + 1];
+
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1][calls[1].indexOf("--resume") + 1], sessionId);
+  assert.equal(payload.status, "completed");
+  assert.match(payload.output, /used its 60-turn budget/);
+  assert.match(payload.output, /VERDICT: approve, with gaps/);
 });
 
 test("foreground advise defaults to xhigh effort", () => {
