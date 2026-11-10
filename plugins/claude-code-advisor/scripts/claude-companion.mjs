@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
@@ -25,7 +26,8 @@ import {
 } from "./lib/runtime.mjs";
 
 const DEFAULT_TIMEOUT_MS = 120000;
-const DEFAULT_TASK_MAX_TURNS = 20;
+const DEFAULT_TASK_MAX_TURNS = 60;
+const SALVAGE_MAX_TURNS = 2;
 const DEFAULT_REVIEW_MAX_TURNS = 1;
 const DEFAULT_MONITOR_INTERVAL_MS = 30000;
 const DEFAULT_MONITOR_CHECKS = 20;
@@ -397,11 +399,13 @@ function runForeground(ctx, kind, prompt, options = {}) {
   const job = createJob(ctx, kind, { write: options.write, summary: prompt.slice(0, 100) });
   ctx.state = persistContext(ctx, upsertJob(ctx.state, job));
   const resume = options.resume ? selectResumeCandidate(ctx.state.jobs.filter((item) => item.id !== job.id), process.env, options) : null;
+  const maxTurns = Number(options.maxTurns || DEFAULT_TASK_MAX_TURNS);
+  const sessionId = resume?.claudeSessionId ? null : randomUUID();
   const args = buildClaudeArgs({
     mode: kind,
-    prompt,
+    prompt: withTurnBudget(prompt, maxTurns),
     outputFormat: options.outputFormat || "text",
-    maxTurns: Number(options.maxTurns || DEFAULT_TASK_MAX_TURNS),
+    maxTurns,
     write: Boolean(options.write),
     resumeSessionId: resume?.claudeSessionId ?? null,
     model: options.model || null,
@@ -409,6 +413,10 @@ function runForeground(ctx, kind, prompt, options = {}) {
     allowMcp: Boolean(options["allow-mcp"]),
     allowWeb: Boolean(options["allow-web"])
   });
+  if (sessionId) {
+    args.unshift("--session-id", sessionId);
+  }
+  const claudeSessionId = resume?.claudeSessionId ?? sessionId;
   let result;
   try {
     result = runClaude(args, { cwd: ctx.cwd, timeoutMs: Number(options.timeoutMs || DEFAULT_TIMEOUT_MS) });
@@ -437,14 +445,62 @@ function runForeground(ctx, kind, prompt, options = {}) {
     });
     throw error;
   }
+  if (result.status !== 0 && isMaxTurnLimitOutput(`${result.stdout}\n${result.stderr}`)) {
+    const salvage = salvageVerdict(ctx, claudeSessionId, maxTurns, options);
+    if (salvage) {
+      return completeJob(ctx, job, {
+        status: "completed",
+        turnLimitHit: true,
+        stdout: salvage.stdout,
+        stderr: result.stderr,
+        claudeSessionId,
+        result: salvage.text
+      });
+    }
+  }
   const status = result.status === 0 ? "completed" : "failed";
   return completeJob(ctx, job, {
     status,
     stdout: result.stdout,
     stderr: result.stderr,
-    claudeSessionId: resume?.claudeSessionId ?? null,
+    claudeSessionId,
     result: result.status === 0 ? result.stdout.trim() : resultWithMaxTurnHint(result)
   });
+}
+
+// Tell Claude its budget so it keeps turns for the answer.
+function withTurnBudget(prompt, maxTurns) {
+  return `${prompt}\n\nTurn budget: you have ${maxTurns} turns in total. A turn is one response, however many tool calls it makes, so batch independent reads in one turn. Keep your last 3 turns for the written answer. If evidence is still missing then, answer anyway and list what you could not check as gaps.`;
+}
+
+// When the cap hits, resume the same session with tools off and ask for the
+// answer from what it already read, so the work is not lost.
+function salvageVerdict(ctx, claudeSessionId, maxTurns, options) {
+  if (!claudeSessionId) {
+    return null;
+  }
+  const args = buildClaudeArgs({
+    mode: "review",
+    prompt: `You used all ${maxTurns} turns. Stop exploring. Write your final answer now, in the format the original task asked for, from the evidence you already gathered. List anything you could not check as a gap, not as a pass or a fail.`,
+    outputFormat: options.outputFormat || "text",
+    maxTurns: SALVAGE_MAX_TURNS,
+    resumeSessionId: claudeSessionId,
+    model: options.model || null,
+    effort: options.effort || DEFAULT_CLAUDE_EFFORT
+  });
+  let result;
+  try {
+    result = runClaude(args, { cwd: ctx.cwd, timeoutMs: Number(options.timeoutMs || DEFAULT_TIMEOUT_MS) });
+  } catch {
+    return null;
+  }
+  if (result.status !== 0 || !result.stdout.trim()) {
+    return null;
+  }
+  return {
+    stdout: result.stdout,
+    text: `Note: Claude used its ${maxTurns}-turn budget; this answer was written from the evidence it gathered before the cap.\n\n${result.stdout.trim()}`
+  };
 }
 
 function runBackground(ctx, kind, prompt, options = {}) {
