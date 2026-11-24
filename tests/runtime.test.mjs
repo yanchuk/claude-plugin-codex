@@ -62,6 +62,12 @@ test("buildClaudeArgs enforces read-only review tool restrictions", () => {
   assert.ok(args.includes("json"));
 });
 
+test("buildClaudeArgs omits --max-turns unless a cap is given", () => {
+  assert.ok(!buildClaudeArgs({ mode: "do", prompt: "task" }).includes("--max-turns"));
+  const args = buildClaudeArgs({ mode: "do", prompt: "task", maxTurns: 7 });
+  assert.deepEqual(args.slice(args.indexOf("--max-turns"), args.indexOf("--max-turns") + 2), ["--max-turns", "7"]);
+});
+
 test("buildClaudeArgs requires explicit write for write-capable mode", () => {
   assert.throws(
     () => buildClaudeArgs({ mode: "advise", prompt: "edit files", write: "implicit" }),

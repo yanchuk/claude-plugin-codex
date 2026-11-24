@@ -25,7 +25,6 @@ import {
 } from "./lib/runtime.mjs";
 
 const DEFAULT_TIMEOUT_MS = 120000;
-const DEFAULT_TASK_MAX_TURNS = 20;
 const DEFAULT_REVIEW_MAX_TURNS = 1;
 const DEFAULT_MONITOR_INTERVAL_MS = 30000;
 const DEFAULT_MONITOR_CHECKS = 20;
@@ -69,6 +68,17 @@ function parseArgs(argv) {
     index += 1;
   }
   return { options, positionals };
+}
+
+function parseMaxTurns(value, fallback = null) {
+  if (value == null) {
+    return fallback;
+  }
+  const turns = Number(value);
+  if (!Number.isInteger(turns) || turns < 1) {
+    throw new Error(`--max-turns must be a positive integer, got ${value}.`);
+  }
+  return turns;
 }
 
 function output(value, asJson) {
@@ -401,7 +411,7 @@ function runForeground(ctx, kind, prompt, options = {}) {
     mode: kind,
     prompt,
     outputFormat: options.outputFormat || "text",
-    maxTurns: Number(options.maxTurns || DEFAULT_TASK_MAX_TURNS),
+    maxTurns: options.maxTurns ?? null,
     write: Boolean(options.write),
     resumeSessionId: resume?.claudeSessionId ?? null,
     model: options.model || null,
@@ -486,12 +496,13 @@ function handleTaskCommand(argv, kind) {
   const { options, positionals } = parseArgs(argv);
   const ctx = currentContext(options);
   const prompt = positionals.join(" ").trim();
+  const maxTurns = parseMaxTurns(options["max-turns"]);
   const job = options.background
     ? runBackground(ctx, kind, prompt, options)
     : runForeground(ctx, kind, prompt, {
         ...options,
         outputFormat: options["output-format"] || "text",
-        maxTurns: options["max-turns"],
+        maxTurns,
         timeoutMs: options["timeout-ms"]
       });
   output(
@@ -530,7 +541,7 @@ function handleReview(argv, kind) {
   const job = runForeground(ctx, kind, prompt, {
     ...options,
     outputFormat: "json",
-    maxTurns: options["max-turns"] || DEFAULT_REVIEW_MAX_TURNS,
+    maxTurns: parseMaxTurns(options["max-turns"], DEFAULT_REVIEW_MAX_TURNS),
     timeoutMs: options["timeout-ms"]
   });
   if (job.status !== "completed") {

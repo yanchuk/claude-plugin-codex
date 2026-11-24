@@ -89,10 +89,11 @@ commands. The guaranteed Codex surface is the `$claude` skill mention.
 - Use `$claude do --model opus` for complex/high-judgment Claude tasks when the
   user asks for or agrees to a stronger Claude worker. Treat Opus as the
   Claude-side choice for tasks you would not hand to a junior agent.
-- Foreground `advise`, `do`, and `rescue` use a larger default max-turn budget
-  for prepared work. `review` and `adversarial-review` stay tight and
-  structured with one default turn. If a foreground prepared task hits the
-  max-turn limit, rerun with `--max-turns <higher>` or narrow the task.
+- For `advise`, `do`, and `rescue`, let Claude use its default turn behavior.
+  Pass `--max-turns <n>` to a foreground run only when the user explicitly
+  requests a cap. If Claude reaches that cap, report the stop and change the
+  cap only at the user's request. `review` and `adversarial-review` default
+  to one turn.
 - Do not auto-resume a Claude job when the companion says explicit selection
   is required.
 
@@ -220,9 +221,8 @@ Use Opus for:
 Still prepare a specific task before launching Opus. Include the goal, relevant
 absolute paths, constraints, allowed write scope, verification command, and stop
 conditions. Use `--write` only after the user agrees to write-capable Claude.
-Foreground `do --model opus` and `rescue --model opus` use the larger prepared
-task max-turn default. Add `--max-turns <n>` only when the task needs a
-different budget.
+Use Claude's default turn behavior for `do --model opus` and
+`rescue --model opus` unless the user requests a foreground turn cap.
 
 ```bash
 node "<plugin root>/scripts/claude-companion.mjs" do --background --model opus --effort xhigh "<prepared task>"

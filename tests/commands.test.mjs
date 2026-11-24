@@ -15,20 +15,32 @@ function makeFakeClaude(scriptBody) {
   return { dir, bin };
 }
 
+// expected === null asserts that --max-turns is absent from both print and background argv.
 function makeFakeClaudeExpectingMaxTurns(expected) {
   return makeFakeClaude(`
 const args = process.argv.slice(2);
-if (args.includes("-p")) {
+const expected = ${JSON.stringify(expected == null ? null : String(expected))};
+if (args.includes("-p") || args[0] === "--bg") {
   const index = args.indexOf("--max-turns");
-  if (args[index + 1] !== ${JSON.stringify(String(expected))}) {
-    console.error("expected --max-turns ${expected}, got " + args[index + 1]);
+  const actual = index === -1 ? null : args[index + 1];
+  if (actual !== expected) {
+    console.error("expected --max-turns " + expected + ", got " + actual);
     process.exit(2);
   }
-  console.log("ok");
+  console.log(args[0] === "--bg" ? "backgrounded · bg123 (idle - send a prompt to start)" : "ok");
   process.exit(0);
 }
 console.error("unsupported"); process.exit(2);
 `);
+}
+
+function runTask(fake, argv) {
+  const stateRoot = fs.mkdtempSync(path.join(os.tmpdir(), "claude-state-"));
+  return spawnSync(process.execPath, [companion.pathname, ...argv], {
+    env: { ...process.env, PATH: `${fake.dir}:${process.env.PATH}`, CLAUDE_COMPANION_STATE_ROOT: stateRoot },
+    cwd: stateRoot,
+    encoding: "utf8"
+  });
 }
 
 test("setup writes a capabilities manifest and degrades background when lifecycle is unavailable", () => {
@@ -308,64 +320,53 @@ console.error("unsupported"); process.exit(2);
   assert.equal(stored.result, "PASS");
 });
 
-test("foreground advise defaults to a larger turn budget", () => {
-  const fake = makeFakeClaudeExpectingMaxTurns(20);
-  const stateRoot = fs.mkdtempSync(path.join(os.tmpdir(), "claude-state-"));
-  const stdout = execFileSync(process.execPath, [companion.pathname, "advise", "check architecture", "--json"], {
-    env: { ...process.env, PATH: `${fake.dir}:${process.env.PATH}`, CLAUDE_COMPANION_STATE_ROOT: stateRoot },
-    cwd: stateRoot,
-    encoding: "utf8"
+for (const kind of ["advise", "do", "rescue"]) {
+  test(`foreground ${kind} omits --max-turns by default`, () => {
+    const result = runTask(makeFakeClaudeExpectingMaxTurns(null), [kind, "inspect local code", "--json"]);
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(JSON.parse(result.stdout).status, "completed");
+    assert.equal(JSON.parse(result.stdout).output, "ok");
   });
-  const payload = JSON.parse(stdout);
 
-  assert.equal(payload.status, "completed");
-  assert.equal(payload.output, "ok");
-});
+  test(`background ${kind} omits --max-turns by default`, () => {
+    const result = runTask(makeFakeClaudeExpectingMaxTurns(null), [kind, "--background", "inspect local code", "--json"]);
 
-test("foreground do defaults to a larger turn budget", () => {
-  const fake = makeFakeClaudeExpectingMaxTurns(20);
-  const stateRoot = fs.mkdtempSync(path.join(os.tmpdir(), "claude-state-"));
-  const stdout = execFileSync(process.execPath, [companion.pathname, "do", "inspect local code", "--json"], {
-    env: { ...process.env, PATH: `${fake.dir}:${process.env.PATH}`, CLAUDE_COMPANION_STATE_ROOT: stateRoot },
-    cwd: stateRoot,
-    encoding: "utf8"
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(JSON.parse(result.stdout).status, "running");
   });
-  const payload = JSON.parse(stdout);
 
-  assert.equal(payload.status, "completed");
-  assert.equal(payload.output, "ok");
-});
+  test(`foreground ${kind} passes an explicit --max-turns to Claude`, () => {
+    const result = runTask(makeFakeClaudeExpectingMaxTurns(5), [kind, "--max-turns", "5", "inspect local code", "--json"]);
 
-test("foreground rescue defaults to a larger turn budget", () => {
-  const fake = makeFakeClaudeExpectingMaxTurns(20);
-  const stateRoot = fs.mkdtempSync(path.join(os.tmpdir(), "claude-state-"));
-  const stdout = execFileSync(process.execPath, [companion.pathname, "rescue", "diagnose the failure", "--json"], {
-    env: { ...process.env, PATH: `${fake.dir}:${process.env.PATH}`, CLAUDE_COMPANION_STATE_ROOT: stateRoot },
-    cwd: stateRoot,
-    encoding: "utf8"
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(JSON.parse(result.stdout).output, "ok");
   });
-  const payload = JSON.parse(stdout);
+}
 
-  assert.equal(payload.status, "completed");
-  assert.equal(payload.output, "ok");
-});
+for (const value of ["0", "-1", "2.5", "abc"]) {
+  test(`task rejects invalid --max-turns ${value} before launching Claude`, () => {
+    const fake = makeFakeClaude(`console.error("claude should not launch"); process.exit(2);`);
+    const result = runTask(fake, ["do", "--max-turns", value, "inspect local code", "--json"]);
 
-test("foreground task max-turn override takes precedence over the default", () => {
-  const fake = makeFakeClaudeExpectingMaxTurns(5);
-  const stateRoot = fs.mkdtempSync(path.join(os.tmpdir(), "claude-state-"));
-  const stdout = execFileSync(
-    process.execPath,
-    [companion.pathname, "do", "--max-turns", "5", "inspect local code", "--json"],
-    {
-      env: { ...process.env, PATH: `${fake.dir}:${process.env.PATH}`, CLAUDE_COMPANION_STATE_ROOT: stateRoot },
-      cwd: stateRoot,
-      encoding: "utf8"
-    }
-  );
-  const payload = JSON.parse(stdout);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /--max-turns must be a positive integer/);
+  });
+}
 
-  assert.equal(payload.status, "completed");
-  assert.equal(payload.output, "ok");
+test("adversarial-review keeps the explicit single-turn default", () => {
+  const fake = makeFakeClaude(`
+const args = process.argv.slice(2);
+if (args.includes("-p") && args[args.indexOf("--max-turns") + 1] === "1") {
+  console.log(JSON.stringify({findings:[]}));
+  process.exit(0);
+}
+console.error("expected --max-turns 1"); process.exit(2);
+`);
+  const result = runTask(fake, ["adversarial-review", "--json"]);
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(JSON.parse(result.stdout).status, "completed");
 });
 
 test("foreground task max-turn failure includes rerun hint", () => {
@@ -554,8 +555,9 @@ if (args[0] === "--bg") {
 }
 if (args.includes("-p")) {
   setTimeout(() => {}, 5000);
+} else {
+  console.error("unsupported"); process.exit(2);
 }
-console.error("unsupported"); process.exit(2);
 `);
   const stateRoot = fs.mkdtempSync(path.join(os.tmpdir(), "claude-state-"));
   const env = { ...process.env, PATH: `${fake.dir}:${process.env.PATH}`, CLAUDE_COMPANION_STATE_ROOT: stateRoot };
@@ -583,8 +585,9 @@ test("foreground advise can disable timeout background fallback", () => {
 const args = process.argv.slice(2);
 if (args.includes("-p")) {
   setTimeout(() => {}, 5000);
+} else {
+  console.error("unsupported"); process.exit(2);
 }
-console.error("unsupported"); process.exit(2);
 `);
   const stateRoot = fs.mkdtempSync(path.join(os.tmpdir(), "claude-state-"));
   const result = spawnSync(

@@ -142,7 +142,7 @@ export function buildClaudeArgs(options) {
     mode,
     prompt,
     outputFormat = "text",
-    maxTurns = 3,
+    maxTurns = null,
     write = false,
     resumeSessionId = null,
     model = null,
@@ -164,7 +164,10 @@ export function buildClaudeArgs(options) {
   }
   args.push("-p", prompt);
   args.push("--output-format", outputFormat);
-  args.push("--max-turns", String(maxTurns));
+  // Omitted means no cap: the Claude CLI has no turn limit unless --max-turns is passed.
+  if (maxTurns != null) {
+    args.push("--max-turns", String(maxTurns));
+  }
   if (model) {
     args.push("--model", model);
   }

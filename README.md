@@ -192,11 +192,10 @@ provider reliability, AI runtime paths, or work that needs the same level of
 judgment you would reserve for GPT-5.5. Still prepare a specific task with
 paths, constraints, allowed write scope, verification, and stop conditions.
 
-Foreground `$claude advise`, `$claude do --model opus`, and
-`$claude rescue --model opus` use a larger default turn budget for prepared
-work. Pass `--max-turns <n>` to override it. `$claude review` and
-`$claude adversarial-review` stay tight and structured with a single default
-turn.
+`$claude advise`, `$claude do`, and `$claude rescue` use the Claude CLI's
+default turn behavior. To cap a foreground run, pass `--max-turns <n>`
+with a positive integer. `$claude review` and `$claude adversarial-review`
+default to one turn.
 
 Managed Claude jobs ignore inherited MCP server config by default. This keeps
 advisor and rescue runs from blocking on an interactive "enable MCP servers?"
@@ -306,9 +305,8 @@ through the installed skill. Sonnet is used only for this small routing test.
 - Read-only prepared local tasks disable web tools by default. `advise` remains
   web-capable. Use `--allow-web` for `do` or `rescue` only when the task needs
   web access.
-- Foreground prepared task routes use a larger default turn budget than
-  structured review. If Claude reports that it hit the max-turn limit, rerun
-  with `--max-turns <higher>` or narrow the task.
+- If a foreground task reaches a requested turn cap, report the stop before
+  changing the cap or narrowing the task.
 - `$claude monitor` checks a background job every 30 seconds by default. It
   reads `claude logs` and `claude agents`, filters routine terminal noise, and
   marks repeated output as stale after two minutes.
